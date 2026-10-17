@@ -5,6 +5,7 @@
 #include "lexer.h"
 #include "parser.h"
 #include "ast.h"
+#include "analyzer.h"
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
@@ -68,6 +69,9 @@ int main(int argc, char *argv[]) {
 
     printf("CForge: parsing successful!\n\n");
     ast_print(tree, 0);
+
+    AnalysisResult analysis = analyze_ast(tree);
+    print_analysis(&analysis);
 
     ast_free(tree);
     free_tokens(&tokens);
