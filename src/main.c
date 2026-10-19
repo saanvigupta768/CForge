@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -6,6 +5,7 @@
 #include "parser.h"
 #include "ast.h"
 #include "analyzer.h"
+#include "recommender.h"
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
@@ -72,6 +72,7 @@ int main(int argc, char *argv[]) {
 
     AnalysisResult analysis = analyze_ast(tree);
     print_analysis(&analysis);
+    print_recommendations(tree);
 
     ast_free(tree);
     free_tokens(&tokens);
