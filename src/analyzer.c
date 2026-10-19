@@ -233,7 +233,7 @@ static Complexity walk(const AST *node, int depth, AnalysisResult *result) {
 
     if (!node) return total;
 
-    if (node->type == AST_FOR) {
+    if (node->type == AST_FOR || node->type == AST_WHILE) {
         depth++;
         result->loop_count++;
 
@@ -246,11 +246,19 @@ static Complexity walk(const AST *node, int depth, AnalysisResult *result) {
         if (result->info_count < MAX_LOOP_INFO)
             info = &result->loops[result->info_count++];
 
-        Complexity own = analyze_header(node, info);
+        Complexity own;
         Complexity body = {0, 0, 0};
 
-        for (size_t i = 0; i < node->child_count; i++)
-            body = cx_max(body, walk(node->children[i], depth, result));
+        if (node->type == AST_FOR) {
+            own = analyze_header(node, info);
+
+            for (size_t i = 0; i < node->child_count; i++)
+                body = cx_max(body, walk(node->children[i], depth, result));
+        } else {
+            snprintf(info->var, sizeof(info->var), "while");
+            own = unknown_loop(info, "while loops are not analyzed yet");
+            body = walk(node->right, depth, result);
+        }
 
         return cx_mul(own, body);
     }

@@ -64,7 +64,8 @@ void ast_print(const AST *node, int depth) {
     static const char *names[] = {
         "Number", "Variable", "Binary", "Declaration",
         "Assignment", "Return", "Block", "For",
-        "String", "Call", "ExprStmt"
+        "String", "Call", "ExprStmt",
+        "If", "While", "Index", "IndexAssign"
     };
 
     for (int i = 0; i < depth; i++)
@@ -163,6 +164,32 @@ static AST *primary(void) {
 
         AST *node = ast_create(AST_VARIABLE, current()->text);
         pos++;
+
+        /* array[index] (can be repeated: grid[i][j]) */
+        while (node && is("[")) {
+            pos++; /* skip '[' */
+
+            AST *index = expression();
+
+            if (!index || !expect("]")) {
+                ast_free(index);
+                ast_free(node);
+                return NULL;
+            }
+
+            AST *element = ast_create(AST_INDEX, NULL);
+
+            if (!element) {
+                ast_free(index);
+                ast_free(node);
+                return NULL;
+            }
+
+            element->left = node;
+            element->right = index;
+            node = element;
+        }
+
         return node;
     }
 
@@ -183,19 +210,25 @@ static AST *primary(void) {
 }
 
 static int precedence(const char *op) {
-    if (strcmp(op, "==") == 0 || strcmp(op, "!=") == 0)
+    if (strcmp(op, "||") == 0)
         return 1;
+
+    if (strcmp(op, "&&") == 0)
+        return 2;
+
+    if (strcmp(op, "==") == 0 || strcmp(op, "!=") == 0)
+        return 3;
 
     if (strcmp(op, "<") == 0 || strcmp(op, ">") == 0 ||
         strcmp(op, "<=") == 0 || strcmp(op, ">=") == 0)
-        return 2;
+        return 4;
 
     if (strcmp(op, "+") == 0 || strcmp(op, "-") == 0)
-        return 3;
+        return 5;
 
     if (strcmp(op, "*") == 0 || strcmp(op, "/") == 0 ||
         strcmp(op, "%") == 0)
-        return 4;
+        return 6;
 
     return 0;
 }
@@ -289,6 +322,39 @@ static AST *make_increment(const char *variable, int decrement) {
     return assignment;
 }
 
+/* Is 'text' one of += -= *= /= %= ? */
+static int is_compound_op(const char *text) {
+    return strcmp(text, "+=") == 0 || strcmp(text, "-=") == 0 ||
+           strcmp(text, "*=") == 0 || strcmp(text, "/=") == 0 ||
+           strcmp(text, "%=") == 0;
+}
+
+/* The current token is an operator like +=. Builds: variable = variable + value */
+static AST *compound_assignment(const char *variable) {
+    char op[2] = { current()->text[0], '\0' };
+    pos++; /* skip the operator */
+
+    AST *value = expression();
+    if (!value) return NULL;
+
+    AST *assignment = ast_create(AST_ASSIGNMENT, variable);
+    AST *binary = ast_create(AST_BINARY, op);
+    AST *var = ast_create(AST_VARIABLE, variable);
+
+    if (!assignment || !binary || !var) {
+        ast_free(assignment);
+        ast_free(binary);
+        ast_free(var);
+        ast_free(value);
+        return NULL;
+    }
+
+    binary->left = var;
+    binary->right = value;
+    assignment->left = binary;
+    return assignment;
+}
+
 static AST *statement(void) {
     /* return expression; */
     if (accept("return")) {
@@ -323,6 +389,16 @@ static AST *statement(void) {
         pos++;
 
         if (!node) return NULL;
+
+        /* int name[size];  (the size is stored in 'right') */
+        if (accept("[")) {
+            node->right = expression();
+
+            if (!node->right || !expect("]")) {
+                ast_free(node);
+                return NULL;
+            }
+        }
 
         if (accept("=")) {
             node->left = expression();
@@ -446,6 +522,22 @@ static AST *statement(void) {
                 }
             } else if (current()->type == TOK_IDENTIFIER &&
                        pos + 1 < input->count &&
+                       input->tokens[pos + 1].type == TOK_OPERATOR &&
+                       is_compound_op(input->tokens[pos + 1].text)) {
+                char variable[256];
+
+                snprintf(variable, sizeof(variable), "%s",
+                         current()->text);
+                pos++; /* skip the variable */
+
+                node->third = compound_assignment(variable);
+
+                if (!node->third) {
+                    ast_free(node);
+                    return NULL;
+                }
+            } else if (current()->type == TOK_IDENTIFIER &&
+                       pos + 1 < input->count &&
                        strcmp(input->tokens[pos + 1].text, "=") == 0) {
                 node->third = ast_create(
                     AST_ASSIGNMENT, current()->text
@@ -489,9 +581,113 @@ static AST *statement(void) {
         return node;
     }
 
+    /* if (condition) statement [else statement] */
+    if (accept("if")) {
+        AST *node = ast_create(AST_IF, NULL);
+        if (!node) return NULL;
+
+        if (!expect("(")) {
+            ast_free(node);
+            return NULL;
+        }
+
+        node->left = expression();
+
+        if (!node->left || !expect(")")) {
+            ast_free(node);
+            return NULL;
+        }
+
+        node->right = statement();
+
+        if (!node->right) {
+            ast_free(node);
+            return NULL;
+        }
+
+        if (accept("else")) {
+            node->third = statement();
+
+            if (!node->third) {
+                ast_free(node);
+                return NULL;
+            }
+        }
+
+        return node;
+    }
+
+    /* while (condition) statement */
+    if (accept("while")) {
+        AST *node = ast_create(AST_WHILE, NULL);
+        if (!node) return NULL;
+
+        if (!expect("(")) {
+            ast_free(node);
+            return NULL;
+        }
+
+        node->left = expression();
+
+        if (!node->left || !expect(")")) {
+            ast_free(node);
+            return NULL;
+        }
+
+        node->right = statement();
+
+        if (!node->right) {
+            ast_free(node);
+            return NULL;
+        }
+
+        return node;
+    }
+
     /* Nested block */
     if (is("{"))
         return block();
+
+    /* x++;  x--;  x += value;  (and -= *= /= %=) */
+    if (current()->type == TOK_IDENTIFIER &&
+        pos + 1 < input->count &&
+        input->tokens[pos + 1].type == TOK_OPERATOR) {
+        const char *next = input->tokens[pos + 1].text;
+
+        if (strcmp(next, "++") == 0 || strcmp(next, "--") == 0) {
+            char variable[256];
+
+            snprintf(variable, sizeof(variable), "%s", current()->text);
+
+            int decrement = (next[0] == '-');
+            pos += 2;
+
+            AST *node = make_increment(variable, decrement);
+
+            if (!node || !expect(";")) {
+                ast_free(node);
+                return NULL;
+            }
+
+            return node;
+        }
+
+        if (is_compound_op(next)) {
+            char variable[256];
+
+            snprintf(variable, sizeof(variable), "%s", current()->text);
+            pos++; /* skip the variable */
+
+            AST *node = compound_assignment(variable);
+
+            if (!node || !expect(";")) {
+                ast_free(node);
+                return NULL;
+            }
+
+            return node;
+        }
+    }
 
     /* variable = expression; */
     if (current()->type == TOK_IDENTIFIER &&
@@ -519,7 +715,32 @@ static AST *statement(void) {
         is("(")) {
         AST *value = expression();
 
-        if (!value || !expect(";")) {
+        if (!value) return NULL;
+
+        /* array[index] = value; */
+        if (value->type == AST_INDEX && accept("=")) {
+            AST *assigned = expression();
+
+            if (!assigned || !expect(";")) {
+                ast_free(assigned);
+                ast_free(value);
+                return NULL;
+            }
+
+            AST *store = ast_create(AST_INDEX_ASSIGN, NULL);
+
+            if (!store) {
+                ast_free(assigned);
+                ast_free(value);
+                return NULL;
+            }
+
+            store->left = value;
+            store->right = assigned;
+            return store;
+        }
+
+        if (!expect(";")) {
             ast_free(value);
             return NULL;
         }
